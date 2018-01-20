@@ -84,6 +84,7 @@ class CommandHandler:
 			if not self.isCommandAllowedForBot(message.bot, commandname):
 				continue
 
+
 			if command.shouldExecute(message):
 				if command.adminOnly and not message.bot.isUserAdmin(message.user, message.userNickname, message.userAddress):
 					message.reply("Sorry, this command is admin-only", "say")
@@ -105,9 +106,9 @@ class CommandHandler:
 
 	@staticmethod
 	def isCommandAllowedForBot(bot, commandname):
-		if bot.settings['commandWhitelist'] is not None and commandname not in bot.settings['commandWhitelist']:
+		if bot.settings['commandWhitelist'] and commandname not in bot.settings['commandWhitelist']:
 			return False
-		elif bot.settings['commandBlacklist'] is not None and commandname in bot.settings['commandBlacklist']:
+		elif bot.settings['commandBlacklist'] and commandname in bot.settings['commandBlacklist']:
 			return False
 		return True
 	
