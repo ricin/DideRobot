@@ -623,7 +623,7 @@ What will they carve on my tombstone? <whitecard>
 What's my safe word? <whitecard>
 What's this town's best-kept secret? <whitecard>
 When I'm dating somebody, I can overlook <whitecard> and <whitecard>, but <whitecard> is a deal-breaker
-When I've serious fucked up and need to make amends, what can I give my significant other to show them I am truly remorseful? <whitecard>
+When I've seriously fucked up and need to make amends, what can I give my significant other to show them I am truly remorseful? <whitecard>
 When you play the Game Of <whitecard>, you win or you die
 While officially still frowned on, <whitecard> is now permitted in the U.S. armed forces
 Who will be first against the wall when the revolution comes? <whitecard>
