@@ -31,7 +31,7 @@ class IrcMessage(object):
 			self.isPrivateMessage = False
 
 		#Handle the text component, including seeing if it starts with the bot's command character
-		self.rawText = rawText
+		self.rawText = rawText.strip()
 		#There isn't always text
 		if not self.rawText:
 			self.trigger = None
@@ -39,7 +39,6 @@ class IrcMessage(object):
 			self.messageParts = []
 			self.messagePartsLength = 0
 		else:
-			self.rawText = self.rawText.strip()
 			#Collect information about the possible command in this message
 			if self.rawText.startswith(bot.commandPrefix):
 				#Get the part from the end of the command prefix to the first space (the 'help' part of '!help say')
@@ -57,7 +56,7 @@ class IrcMessage(object):
 				self.trigger = None
 				self.message = self.rawText
 
-			if self.message != "":
+			if self.message:
 				self.messageParts = self.message.split(" ")
 				self.messagePartsLength = len(self.messageParts)
 			else:
@@ -67,5 +66,5 @@ class IrcMessage(object):
 	def reply(self, replytext, messagetype=None):
 		if not messagetype:
 			#Reply with a notice to a user's notice (not a channel one!), and with a 'say' to anything else
-			messagetype = 'notice' if self.messageType == 'notice' and self.source[0] not in Constants.CHANNEL_PREFIXES else 'say'
+			messagetype = 'notice' if self.messageType == 'notice' and self.isPrivateMessage else 'say'
 		self.bot.sendMessage(self.source, replytext, messagetype)

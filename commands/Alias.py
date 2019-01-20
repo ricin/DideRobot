@@ -1,4 +1,4 @@
-import json, os, random, re
+import json, os
 
 from CommandTemplate import CommandTemplate
 from IrcMessage import IrcMessage
@@ -59,7 +59,7 @@ class Command(CommandTemplate):
 			if len(aliasNames) == 0:
 				message.reply("No aliases stored yet. You could be the first to add one!", "say")
 			else:
-				message.reply(u"{:,} alias(es): {}".format(len(aliasNames), u", ".join(aliasNames)), "say")
+				message.reply(u"{:,} alias{}: {}".format(len(aliasNames), u"es" if len(aliasNames) > 1 else u"", u", ".join(sorted(aliasNames))), "say")
 
 		elif parameter == "show":
 			if message.messagePartsLength == 1:
@@ -105,6 +105,13 @@ class Command(CommandTemplate):
 			if (server in self.aliases and aliasname in self.aliases[server]) or (serverChannelString in self.aliases and aliasname in self.aliases[serverChannelString]):
 				message.reply(u"'{}' already is an alias! Looks like you weren't the only one with this presumably great idea!".format(aliasname), "say")
 				return
+
+			#Check if there is a module that already has the trigger that we want to set for this alias
+			for modulename, module in GlobalStore.commandhandler.commands.iteritems():
+				#Also check if the module is enabled for this server, because if, say, the help module is disabled, creating a 'help' alias isn't a problem
+				if aliasname in module.triggers and GlobalStore.commandhandler.isCommandAllowedForBot(message.bot, modulename):
+					message.reply(u"'{}' is already a trigger for the {} module, so using it as an alias would just get confusing. I'm sure you can think of another name though!".format(aliasname, modulename))
+					return
 
 			if parameter == "serveradd" and server not in self.aliases:
 				self.aliases[server] = {}
@@ -166,7 +173,13 @@ class Command(CommandTemplate):
 			aliasDict[str(i+1)] = message.messageParts[i] if i < message.messagePartsLength else u""
 		aliasDict[u'nick'] = message.userNickname
 		aliasDict[u'CP'] = message.bot.commandPrefix
-		newMessageText = GlobalStore.commandhandler.runCommandFunction('parseGrammarDict', None, aliasDict, parameters=message.messageParts)
+		#Always send along parameters
+		parameters = message.messageParts if message.messagePartsLength > 0 else [""]
+		newMessageText = GlobalStore.commandhandler.runCommandFunction('parseGrammarDict', None, aliasDict, parameters=parameters)
+		#Check if the parsing went well
+		if newMessageText.startswith(u"Error: "):
+			message.reply(u"Something went wrong with executing the alias: " + newMessageText.split(': ', 1)[1])
+			return
 		#Aliases that use parameters can end with whitespace at the end. Remove that
 		newMessageText = newMessageText.rstrip()
 

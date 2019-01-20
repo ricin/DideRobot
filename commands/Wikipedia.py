@@ -1,11 +1,11 @@
-import json
+import json, re
 
 import requests
 
 from CommandTemplate import CommandTemplate
 import Constants
 import GlobalStore
-import SharedFunctions
+
 
 class Command(CommandTemplate):
 	triggers = ['wikipedia', 'wiki', 'wikirandom']
@@ -23,15 +23,17 @@ class Command(CommandTemplate):
 		except requests.exceptions.Timeout:
 			return (False, "Apparently Wikipedia couldn't pick between all of its interesting articles, so it took too long to reply. Sorry!")
 		self.logDebug("[wiki] Random page url: {}".format(page.url))
-		articleName = page.url.split('/wiki/', 1)[1]  #Get the part of the URL that is the article title
+		articleName = re.search(ur"<title.*?>(.+?) - Wikipedia</title>", page.text, re.IGNORECASE).group(1)
 		return self.getArticleText(articleName, addExtendedText)
 
 	def searchWikipedia(self, searchterm, addExtendedText=False):
 		if not isinstance(searchterm, unicode):
 			searchterm = searchterm.decode('utf-8', errors='replace')
-		url = u'https://en.wikipedia.org/w/api.php?format=json&utf8=1&action=query&list=search&srwhat=nearmatch&srlimit=1&srsearch={}&srprop='.format(searchterm)
+		url = u"https://en.wikipedia.org/w/api.php"
+		params = {u'format': u'json', u'utf8': 1, u'action': u'query', u'list': u'search', u'srwhat': u'nearmatch',
+				 u'srlimit': 1, u'srsearch': searchterm}
 		try:
-			result = requests.get(url, timeout=10.0)
+			result = requests.get(url, params=params, timeout=10.0)
 		except requests.exceptions.Timeout:
 			return (False, "Either that's a difficult search query, or Wikipedia is tired. Either way, that search took too long, sorry")
 		result = json.loads(result.text)
@@ -45,14 +47,13 @@ class Command(CommandTemplate):
 			return self.getArticleText(result['query']['search'][0]['title'], addExtendedText)
 
 	def getArticleText(self, pagename, addExtendedText=False, limitLength=True):
-		replyLengthLimit = 310
 
 		url = u'https://en.wikipedia.org/w/api.php'
 		params = {'format': 'json', 'utf8': '1', 'action': 'query', 'prop': 'extracts', 'redirects': '1',
 				  'exintro': '1', 'explaintext': '1', 'exsectionformat': 'plain', 'titles': pagename}
 		#If we need to be verbose, get as many characters as we can
 		if addExtendedText:
-			params['exchars'] = replyLengthLimit
+			params['exchars'] = Constants.MAX_MESSAGE_LENGTH * 1.5  #Get some extra characters since we may remove some later
 		#Otherwise just get the first sentence
 		else:
 			params['exsentences'] = '1'
@@ -76,9 +77,13 @@ class Command(CommandTemplate):
 				replytext = "'{}' has multiple meanings".format(pagename)
 			else:
 				replytext = replytext.replace('\n', ' ').replace('  ', ' ')
+				#Some articles contain a link to a pronunciation sound file. Since that doesn't work here, remove it
+				replytext = replytext.replace(" ( listen)", "")
+				#Sometimes this leaves empty brackets, remove those too
+				replytext = replytext.replace(" ()", "")
 			#Make sure the text isn't too long
-			if limitLength and len(replytext) > replyLengthLimit:
-				replytext = replytext[:replyLengthLimit]
+			if limitLength and len(replytext) > Constants.MAX_MESSAGE_LENGTH:
+				replytext = replytext[:Constants.MAX_MESSAGE_LENGTH]
 				#Try not to chop up words
 				lastSpaceIndex = replytext.rfind(' ')
 				if lastSpaceIndex > -1:

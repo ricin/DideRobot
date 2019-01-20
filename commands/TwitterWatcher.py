@@ -4,7 +4,9 @@ import HTMLParser
 from CommandTemplate import CommandTemplate
 import Constants
 import GlobalStore
-import SharedFunctions
+from util import DateTimeUtil
+from util import IrcFormattingUtil
+from util import TwitterUtil
 from IrcMessage import IrcMessage
 
 
@@ -115,7 +117,7 @@ class Command(CommandTemplate):
 			if not isUserBeingWatchedHere:
 				replytext = "I'm not watching {}, so I don't know what they've been up to. On Twitter or anywhere else".format(accountName)
 			else:
-				singleTweet = SharedFunctions.downloadTweet(accountNameLowered, self.watchData[accountNameLowered]['highestId'])
+				singleTweet = TwitterUtil.downloadTweet(accountNameLowered, self.watchData[accountNameLowered]['highestId'])
 				if not singleTweet[0]:
 					self.logError("[TwitterWatcher] Error occured while downloading single tweet id {} of user {}: {}".format(accountName, self.watchData[accountNameLowered]['highestId'], singleTweet[1]))
 					replytext = "Woops, something went wrong there. Tell my owner(s), maybe it's something they can fix. Or maybe it's Twitter's fault, in which case all we can do is wait"
@@ -157,7 +159,7 @@ class Command(CommandTemplate):
 			if username not in self.watchData:
 				self.logWarning("[TwitterWatcher] Asked to check account '{}' for new tweets, but it is not in the watchlist".format(username))
 				continue
-			tweetsReply = SharedFunctions.downloadTweets(username, maxTweetCount=10, downloadNewerThanId=self.watchData[username].get('highestId', None), includeRetweets=False)
+			tweetsReply = TwitterUtil.downloadTweets(username, maxTweetCount=10, downloadNewerThanId=self.watchData[username].get('highestId', None), includeRetweets=False)
 			if not tweetsReply[0]:
 				self.logError("[TwitterWatcher] Couldn't retrieve tweets for '{}': {}".format(username, tweetsReply[1]))
 				continue
@@ -220,13 +222,13 @@ class Command(CommandTemplate):
 		if addTweetAge:
 			if not tweetAge:
 				tweetAge = self.getTweetAge(tweetData['created_at'])
-			tweetAge = SharedFunctions.durationSecondsToText(tweetAge.total_seconds())
+			tweetAge = DateTimeUtil.durationSecondsToText(tweetAge.total_seconds())
 			tweetAge = ' ({} ago)'.format(tweetAge)
 		else:
 			tweetAge = ''
 		tweetUrl = "http://twitter.com/_/status/{}".format(tweetData['id_str'])  #Use _ instead of username to save some characters
 		#Remove newlines
-		formattedTweetText = tweetData['text'].replace('\n\n', '\n').replace('\n', Constants.GREY_SEPARATOR)
+		formattedTweetText = tweetData['full_text'].replace('\n\n', '\n').replace('\n', Constants.GREY_SEPARATOR)
 		#Fix special characters (convert '&amp;' to '&' for instance)
 		formattedTweetText = HTMLParser.HTMLParser().unescape(formattedTweetText)
 		#Remove the link to the photo at the end, but mention that there is one
@@ -235,7 +237,7 @@ class Command(CommandTemplate):
 				formattedTweetText = formattedTweetText.replace(mediaItem['url'], u'')
 				formattedTweetText += u"(has {})".format(mediaItem['type'])
 		#Add in all the text around the tweet now, so we get a better sense of message length
-		formattedTweetText = u"{name}: {text}{age}{sep}{url}".format(name=SharedFunctions.makeTextBold(self.getDisplayName(username)), text=formattedTweetText,
+		formattedTweetText = u"{name}: {text}{age}{sep}{url}".format(name=IrcFormattingUtil.makeTextBold(self.getDisplayName(username)), text=formattedTweetText,
 																	 age=tweetAge, sep=Constants.GREY_SEPARATOR, url=tweetUrl)
 		#Expand URLs (if it'd fit)
 		if 'urls' in tweetData['entities']:

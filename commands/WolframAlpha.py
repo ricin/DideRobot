@@ -9,7 +9,7 @@ import requests
 from CommandTemplate import CommandTemplate
 import Constants
 import GlobalStore
-import SharedFunctions
+from util import WebUtil
 from IrcMessage import IrcMessage
 
 
@@ -43,7 +43,7 @@ class Command(CommandTemplate):
 			podIndexParam = podIndexParam[:-1]
 			params['podindex'] = podIndexParam
 		try:
-			apireturn = requests.get("http://api.wolframalpha.com/v2/query", params=params, timeout=15.0)
+			apireturn = requests.get("http://api.wolframalpha.com/v2/query", params=params, timeout=10.0)
 		except requests.exceptions.Timeout:
 			return (False, "Sorry, Wolfram Alpha took too long to respond")
 		xmltext = apireturn.text
@@ -121,7 +121,10 @@ class Command(CommandTemplate):
 
 		#Make sure we don't spam the channel, keep message length limited
 		#  Shortened URL will be about 25 characters, keep that in mind
-		messageLengthLimit = 270 if includeUrl else 300
+		messageLengthLimit = Constants.MAX_MESSAGE_LENGTH
+		if includeUrl:
+			messageLengthLimit -= 30
+
 		if len(replystring) > messageLengthLimit:
 			replystring = replystring[:messageLengthLimit] + '[...]'
 
@@ -129,8 +132,8 @@ class Command(CommandTemplate):
 		if includeUrl:
 			searchUrl = "http://www.wolframalpha.com/input/?i={}".format(urllib.quote_plus(query))
 			#If the message would get too long, shorten the result URL
-			if len(replystring) + len(searchUrl) > 300:
-				searchUrl = SharedFunctions.shortenUrl(searchUrl)[1]
+			if len(replystring) + len(searchUrl) > Constants.MAX_MESSAGE_LENGTH:
+				searchUrl = WebUtil.shortenUrl(searchUrl)[1]
 			replystring += "{}{}".format(Constants.GREY_SEPARATOR, searchUrl)
 			
 		return replystring

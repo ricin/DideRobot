@@ -6,7 +6,7 @@ import requests
 
 from CommandTemplate import CommandTemplate
 import GlobalStore
-import SharedFunctions
+from util import StringUtil
 from IrcMessage import IrcMessage
 
 
@@ -42,7 +42,7 @@ class Command(CommandTemplate):
 				replytext = "I'm already updating!"
 			elif not message.bot.isUserAdmin(message.user, message.userNickname, message.userAddress):
 				replytext = "Sorry, only admins can use my update function"
-			elif not searchType == 'forceupdate' and not self.shouldUpdate()[0]:
+			elif not searchType == 'forceupdate' and not self.shouldUpdate():
 				replytext = "The last update check was done pretty recently, there's no need to check again so soon"
 			else:
 				replytext = self.updateCardFile()[1]
@@ -71,7 +71,7 @@ class Command(CommandTemplate):
 				return
 
 			#Turn the search string (not the argument) into a usable dictionary, case-insensitive,
-			searchDict = SharedFunctions.stringToDict(" ".join(message.messageParts[1:]).lower(), True)
+			searchDict = StringUtil.stringToDict(" ".join(message.messageParts[1:]).lower(), True)
 			if len(searchDict) == 0:
 				message.reply("That is not a valid search query. It should be entered like JSON, so 'name: Wall of Thorns, type: ICE,...'. ")
 				return
@@ -272,13 +272,13 @@ class Command(CommandTemplate):
 		# If we don't absolutely HAVE to update, check if our last update isn't too soon, to prevent work and traffic
 		versionfilename = os.path.join(GlobalStore.scriptfolder, 'data', 'NetrunnerCardsVersion.json')
 		if not os.path.exists(versionfilename):
-			return (True, "Version file does not exist")
+			return True
 		else:
 			with open(versionfilename) as versionfile:
 				versiondata = json.load(versionfile)
 			if time.time() - versiondata['lastUpdateTime'] < self.scheduledFunctionTime - 5.0:
-				return (False, "Last update was less than 5 days ago, not updating now")
-		return (True, "Last update was more than 5 days ago, check needed")
+				return False
+		return True
 
 	def updateCardFile(self):
 		starttime = time.time()

@@ -2,7 +2,8 @@ import json, os, random, re, time
 
 from CommandTemplate import CommandTemplate
 import GlobalStore
-import SharedFunctions
+from util import FileUtil
+from util import TwitterUtil
 from IrcMessage import IrcMessage
 
 
@@ -54,7 +55,7 @@ class Command(CommandTemplate):
 		if not os.path.exists(tweetFileName):
 			self.executeScheduledFunction()
 			return (False, "I don't seem to have the tweets for '{}', sorry! I'll retrieve them right away, try again in a bit".format(name))
-		tweets = SharedFunctions.getAllLinesFromFile(tweetFileName)
+		tweets = FileUtil.getAllLinesFromFile(tweetFileName)
 		if searchterm is not None:
 			#Search terms provided! Go through all the tweets to find matches
 			regex = None
@@ -114,7 +115,7 @@ class Command(CommandTemplate):
 				storedInfo[username] = {'linecount': 0}
 			elif "highestIdDownloaded" in storedInfo[username]:
 				highestIdDownloaded = storedInfo[username]['highestIdDownloaded']
-			tweetResponse = SharedFunctions.downloadTweets(username, downloadNewerThanId=highestIdDownloaded)
+			tweetResponse = TwitterUtil.downloadTweets(username, downloadNewerThanId=highestIdDownloaded)
 			if not tweetResponse[0]:
 				self.logError("[STTip] Something went wrong while downloading new tweets for '{}', skipping".format(username))
 				continue
@@ -128,7 +129,7 @@ class Command(CommandTemplate):
 			#All tweets downloaded. Time to process them
 			tweetfile = open(os.path.join(GlobalStore.scriptfolder, 'data', 'tweets', "{}.txt".format(username)), "a")
 			for tweet in tweets:
-				tweetfile.write(tweet['text'].replace('\n', ' ').encode(encoding='utf-8', errors='replace') + '\n')
+				tweetfile.write(tweet['full_text'].replace('\n', ' ').encode(encoding='utf-8', errors='replace') + '\n')
 			tweetfile.close()
 			#Get the id of the last tweet in the list (the newest one), so we know where to start downloading from next time
 			storedInfo[username]['highestIdDownloaded'] = tweets[-1]['id']

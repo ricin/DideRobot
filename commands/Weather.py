@@ -7,7 +7,8 @@ import requests
 from CommandTemplate import CommandTemplate
 from IrcMessage import IrcMessage
 import GlobalStore
-import SharedFunctions
+from util import IrcFormattingUtil
+from util import StringUtil
 
 
 class Command(CommandTemplate):
@@ -118,12 +119,12 @@ class Command(CommandTemplate):
 						for day in data['list']:
 							dayname = datetime.datetime.utcfromtimestamp(day['dt']).strftime(u"%a").upper()
 
-							forecast = u"{dayname}: {minTempC:.0f}-{maxTempC:.0f}°C / {minTempF:.0f}-{maxTempF:.0f}°F, {weatherType}, {humidity}% hum., {windSpeed:.0f}m/s {windDir} wind."
-							forecast = forecast.format(dayname=dayname, minTempC=day['temp']['min'], maxTempC=day['temp']['max'],
-													minTempF=celsiusToFahrenheit(day['temp']['min']), maxTempF=celsiusToFahrenheit(day['temp']['max']),
-													humidity=day['humidity'], windSpeed=day['speed'], windDir=getWindDirection(day['deg']), weatherType=day['weather'][0]['description'])
+							forecast = u"{dayname}: {minTempC:.0f}-{maxTempC:.0f}°C / {minTempF:.0f}-{maxTempF:.0f}°F, {weatherType}, {humidity}% hum., {windSpeed:.0f}m/s {windDir} wind"
+							forecast = forecast.format(dayname=IrcFormattingUtil.makeTextBold(dayname), minTempC=day['temp']['min'], maxTempC=day['temp']['max'],
+													   minTempF=celsiusToFahrenheit(day['temp']['min']), maxTempF=celsiusToFahrenheit(day['temp']['max']),
+													   humidity=day['humidity'], windSpeed=day['speed'], windDir=getWindDirection(day['deg']), weatherType=day['weather'][0]['description'])
 							forecasts.append(forecast)
-						replytext += SharedFunctions.joinWithSeparator(forecasts)
+						replytext += StringUtil.joinWithSeparator(forecasts)
 
 
 		message.bot.sendMessage(message.source, replytext)

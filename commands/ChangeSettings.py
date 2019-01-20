@@ -38,8 +38,13 @@ class Command(CommandTemplate):
 			settingsKey = message.messageParts[1]  #Can't make this lower(), because some keys are camelCase
 			if param == 'get':
 				if settingsKey in settings:
-					if isinstance(settings[settingsKey], list):
-						return message.reply(u"List for setting '{}: {}".format(settingsKey, u"; ".join(settings[settingsKey])))
+					if settings[settingsKey] is None:
+						return message.reply(u"Setting '{}' is set to an empty value".format(settingsKey))
+					elif isinstance(settings[settingsKey], list):
+						if len(settings[settingsKey]) == 0:
+							return message.reply(u"Setting '{}' is an empty list".format(settingsKey))
+						else:
+							return message.reply(u"List for setting '{}: {}".format(settingsKey, u"; ".join(settings[settingsKey])))
 					else:
 						return message.reply(u"Value for setting '{}': {}".format(settingsKey, settings[settingsKey]))
 				else:
@@ -91,7 +96,7 @@ class Command(CommandTemplate):
 					return message.reply(u"Something went wrong when parsing the change of the value for '{}' to '{}'. Please check the logs".format(settingsKey, settings[settingsKey]))
 			elif param == 'add' or param == 'remove':
 				if settingsKey not in settings:
-					return message.reply(u"The setting '{}' does not exist. Check your spelling or use 'setlist' to create the list")
+					return message.reply(u"The setting '{}' does not exist. Check your spelling or use 'setlist' to create the list".format(settingsKey))
 				if not isinstance(settings[settingsKey], list):
 					return message.reply(u"The setting '{}' is not a list. Use 'set' to change it".format(settingsKey))
 				oldValue = settings[settingsKey]

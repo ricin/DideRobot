@@ -10,27 +10,35 @@ import gevent
 from CommandTemplate import CommandTemplate
 import Constants
 import GlobalStore
-import SharedFunctions
+from util import IrcFormattingUtil
+from util import FileUtil
+from util import StringUtil
+from util import WebUtil
 from IrcMessage import IrcMessage
 
 
 class Command(CommandTemplate):
-	triggers = ['mtg', 'mtgf', 'mtgb', 'magic']
+	triggers = ['mtg', 'mtgf', 'mtgb', 'magic', 'mtglink']
 	helptext = "Looks up info on Magic: The Gathering cards. Provide a card name or regex to search for, or 'random' for a surprise. "
 	helptext += "Use 'search' with key-value attribute pairs for more control, see http://mtgjson.com/documentation.html#cards for available attributes. "
-	helptext += "{commandPrefix}mtgf adds the flavor text and sets to the output. '{commandPrefix}mtgb [setname]' opens a boosterpack"
+	helptext += "'{commandPrefix}mtgf' adds the flavor text and sets to the output. '{commandPrefix}mtgb [setname]' opens a boosterpack. "
+	helptext += "'{commandPrefix}mtglink' returns links to the card on Gatherer and MagicCards.info"
 	scheduledFunctionTime = 172800.0  #Every other day, since it doesn't update too often
 	callInThread = True  #If a call causes a card update, make sure that doesn't block the whole bot
 
 	areCardfilesInUse = False
-	dataFormatVersion = '4.3'
+	dataFormatVersion = '4.3.5'
 
 	def onLoad(self):
-		GlobalStore.commandhandler.addCommandFunction(__file__, 'searchMagicTheGatheringCards', self.searchCards)
+		GlobalStore.commandhandler.addCommandFunction(__file__, 'searchMagicTheGatheringCards', self.getFormattedResultFromSearchString)
 
 	def executeScheduledFunction(self):
 		if not self.areCardfilesInUse and self.shouldUpdate():
-			self.updateCardFile()
+			try:
+				self.updateCardFile()
+			except Exception as e:
+				self.logError("[MTG] An error occurred during scheduled update: " + e.message)
+				self.areCardfilesInUse = False
 
 	def execute(self, message):
 		"""
@@ -38,8 +46,7 @@ class Command(CommandTemplate):
 		"""
 		#Immediately check if there's any parameters, to prevent useless work
 		if message.messagePartsLength == 0:
-			message.reply("This command " + self.helptext[0].lower() + self.helptext[1:].format(commandPrefix=message.bot.commandPrefix))
-			return
+			return message.reply(self.getHelp(message), "say")
 
 		#If the card set is currently being updated, we probably shouldn't try loading it
 		if self.areCardfilesInUse:
@@ -78,8 +85,29 @@ class Command(CommandTemplate):
 
 		#We can also search for definitions
 		elif searchType == 'define':
-			message.reply(self.getDefinition(message, message.trigger.endswith('f')))
-			return
+			#Get only the first part of the definition if the 'full info' trigger wasn't used, otherwise get the whole definition, which can be really long
+			definitionText = self.getDefinition(" ".join(message.messageParts[1:]), None if message.trigger == 'mtgf' else Constants.MAX_MESSAGE_LENGTH)
+			#Now split the definition up into message-sized chunks and send each of them, if necessary
+			# This is not needed in a private message, since huge blocks of text are less of a problem there
+			if not message.isPrivateMessage and message.trigger == 'mtgf' and len(definitionText) > Constants.MAX_MESSAGE_LENGTH:
+				#Cut it up at a word boundary
+				splitIndex = definitionText[:Constants.MAX_MESSAGE_LENGTH].rfind(' ')
+				textRemainder = definitionText[splitIndex + 1:]
+				definitionText = definitionText[:splitIndex]
+				#Since we'll be sending the rest of the definition in notices, add an indication that it's not the whole message
+				definitionText += u' [...]'
+				#Don't send messages too quickly
+				secondsBetweenMessages = message.bot.secondsBetweenLineSends
+				if not secondsBetweenMessages:
+					secondsBetweenMessages = 0.2
+				counter = 1
+				while len(textRemainder) > 0:
+					gevent.spawn_later(secondsBetweenMessages * counter, message.bot.sendMessage, message.userNickname,
+									   u"({}) {}".format(counter + 1, textRemainder[:Constants.MAX_MESSAGE_LENGTH]), 'notice')
+					textRemainder = textRemainder[Constants.MAX_MESSAGE_LENGTH:]
+					counter += 1
+			#Present the result!
+			return message.reply(definitionText, "say")
 
 		elif searchType == 'booster' or message.trigger == 'mtgb':
 			if (searchType == 'booster' and message.messagePartsLength == 1) or (message.trigger == 'mtgb' and message.messagePartsLength == 0):
@@ -98,15 +126,44 @@ class Command(CommandTemplate):
 				#Unknown searchtype, just assume the entire entered text is a name search
 				searchType = 'search'
 				searchString = message.message
-			message.reply(self.searchCards(searchType, searchString, message.trigger.endswith('f'), 20 if message.isPrivateMessage else 10), "say")
+			#Do the search
+			searchResult = self.getMatchingCardsFromSearchString(searchType, searchString)
+			#Show the results
+			if not searchResult[0]:
+				#Something went wrong, just reply the error message
+				replytext = searchResult[1]
+			elif len(searchResult[2]) == 0:
+				#No matches
+				replytext = "Sorry, I couldn't find any cards that match your search query"
+			else:
+				#SearchResult[1] is the parsed searchDict, searchResult[2] is the matching cards
+				numberOfCardsToList = 20 if message.isPrivateMessage else 10
+				shouldPickRandomCard = searchType.startswith('random')
+				if message.trigger == 'mtglink':
+					replytext = self.getLinksFromSearchString(searchResult[1], searchResult[2], shouldPickRandomCard, numberOfCardsToList)
+				else:
+					#Normal search, format it
+					replytext = self.formatSearchResult(searchResult[2], message.trigger.endswith('f'), shouldPickRandomCard, numberOfCardsToList, searchResult[1].get('name', None), True)
+			message.reply(replytext, "say")
 
-	def searchCards(self, searchType, searchString, extendedInfo=False, resultListLength=10):
+	def getFormattedResultFromSearchString(self, searchType, searchString, extendedInfo=False, resultListLength=10):
+		result = self.getMatchingCardsFromSearchString(searchType, searchString)
+		if not result[0]:
+			#Something went wrong, second parameter is the error message, return that
+			return result[1]
+		#Search was successful, second parameter is the parsed search dictionary, third is the matching cards. Return a formatted result
+		return self.formatSearchResult(result[2], extendedInfo, searchType.startswith('random'), resultListLength, result[1].get('name', None), True)
+
+	def getMatchingCardsFromSearchString(self, searchType, searchString):
 		#Special case to prevent it having to load in all the cards before picking one
 		if searchType == 'random' and not searchString:
 			#Just pick a random card from all available ones
-			card = json.loads(SharedFunctions.getRandomLineFromFile(os.path.join(GlobalStore.scriptfolder, 'data', 'MTGcards.json')))
+			with open(os.path.join(GlobalStore.scriptfolder, 'data', 'MTGversion.json')) as versionfile:
+				linecount = json.load(versionfile)['cardCount']
+			randomLineNumber = random.randint(1, linecount) - 1 # minus 1 because getLineFromFile() starts at 0
+			card = json.loads(FileUtil.getLineFromFile(os.path.join(GlobalStore.scriptfolder, 'data', 'MTGcards.json'), randomLineNumber))
 			cardname, carddata = card.popitem()
-			return self.getFormattedCardInfo(carddata, extendedInfo)
+			return (True, {}, {cardname: (randomLineNumber, None)})
 
 		#Make sure the search string is an actual string, and not None or something
 		if searchString is None:
@@ -116,18 +173,18 @@ class Command(CommandTemplate):
 		parseSuccess, searchDict = self.parseSearchParameters(searchType, searchString)
 		if not parseSuccess:
 			#If an error occurred, the second returned parameter isn't the searchdict but an error message
-			return searchDict
+			return (False, searchDict)
 		#Check if the entered search terms can be converted to the regex we need
 		parseSuccess, regexDict = self.searchDictToRegexDict(searchDict)
 		if not parseSuccess:
 			#Again, 'regexDict' is the error string if an error occurred
-			return regexDict
+			return (False, regexDict)
 		matchingCards = self.searchCardStore(regexDict)
 		#Clear the stored regexes, since we don't need them anymore
 		del regexDict
 		re.purge()
-		#Done, show the formatted result
-		return self.formatSearchResult(matchingCards, extendedInfo, searchType.startswith('random'), resultListLength, searchDict.get('name', None), len(searchDict) > 0)
+		#Done, return the search dictionary (possibly needed for further parsing), and the matching cards
+		return (True, searchDict, matchingCards)
 
 	@staticmethod
 	def parseSearchParameters(searchType, searchString):
@@ -137,7 +194,7 @@ class Command(CommandTemplate):
 		#Check if there is an actual search (with colon as key-value separator)
 		elif ':' in searchString:
 			#Advanced search! Turn the search string into a usable dictionary
-			searchDict = SharedFunctions.stringToDict(searchString.lower(), True)
+			searchDict = StringUtil.stringToDict(searchString.lower(), True)
 			if len(searchDict) == 0:
 				return (False, "That is not a valid search query. It should be entered like JSON, so 'name: ooze, type: creature,...'. "
 							  "For a list of valid keys, see http://mtgjson.com/documentation.html#cards (though not all keys may be available)")
@@ -153,7 +210,7 @@ class Command(CommandTemplate):
 			searchDict['type'] = 'legendary.+creature.*' + searchDict['type']
 
 		#Correct some values, to make searching easier (so a search for 'set' or 'sets' both work)
-		searchTermsToCorrect = {'set': ('sets',), 'colors': ('color', 'colour', 'colours'), 'type': ('types', 'supertypes', 'subtypes'), 'flavor': ('flavour',)}
+		searchTermsToCorrect = {'set': ('sets', 'setname'), 'colors': ('color', 'colour', 'colours'), 'type': ('types', 'supertypes', 'subtypes'), 'flavor': ('flavour',)}
 		for correctTerm, listOfWrongterms in searchTermsToCorrect.iteritems():
 			for wrongTerm in listOfWrongterms:
 				if wrongTerm in searchDict:
@@ -276,18 +333,19 @@ class Command(CommandTemplate):
 		if len(cardstore) == 1:
 			#Retrieve the full info on the card we found
 			linenumber, setname = cardstore.values()[0]
-			cardname, carddata = json.loads(SharedFunctions.getLineFromFile(os.path.join("data", "MTGcards.json"), linenumber)).popitem()
+			cardname, carddata = json.loads(FileUtil.getLineFromFile(os.path.join("data", "MTGcards.json"), linenumber)).popitem()
 			replytext = self.getFormattedCardInfo(carddata, addExtendedCardInfo, setname)
 			#We may have culled the cardstore list, so there may have been more matches initially. List a count of those
 			if addResultCount and numberOfCardsFound > 1:
-				replytext += " ({:,} more match{} found)".format(numberOfCardsFound - 1, 'es' if numberOfCardsFound > 2 else '')  #>2 because we subtract 1
+				replytext += " ({:,} more found)".format(numberOfCardsFound - 1)
 			return replytext
 
 		#Check if we didn't find more matches than we're allowed to show
-		if numberOfCardsFound <= maxCardsToList:
-			cardnames = sorted(cardstore.keys())
-		else:
-			cardnames = sorted(random.sample(cardstore.keys(), maxCardsToList))
+		cardnames = cardstore.keys()
+		if numberOfCardsFound > maxCardsToList:
+			cardnames = random.sample(cardnames, maxCardsToList)
+		#Show them alphabetically
+		cardnames = sorted(cardnames)
 
 		replytext = u"Your search returned {:,} cards: {}".format(numberOfCardsFound, u"; ".join(cardnames))
 		if numberOfCardsFound > maxCardsToList:
@@ -298,7 +356,7 @@ class Command(CommandTemplate):
 	def getFormattedCardInfo(carddata, addExtendedInfo=False, setname=None, startingLength=0):
 		card = carddata[0]
 		sets = carddata[1]
-		cardInfoList = [SharedFunctions.makeTextBold(card['name'])]
+		cardInfoList = [IrcFormattingUtil.makeTextBold(card['name'])]
 		if 'type' in card and len(card['type']) > 0:
 			cardInfoList.append(card['type'])
 		if 'manacost' in card:
@@ -323,10 +381,10 @@ class Command(CommandTemplate):
 			if 'life' in card:
 				handLife += card['life'] + u" lifemod"
 			cardInfoList.append(handLife)
-		if 'layout' in card and card['layout'] != u'normal':
-			cardInfoList.append(u"Layout is '" + card['layout'] + u"'")
+		if 'layout' in card:
+			cardInfoList.append(card['layout'])
 			if 'names' in card:
-				cardInfoList[-1] += u", also contains " + card['names']
+				cardInfoList[-1] += u", with " + card['names']
 		#All cards have a 'text' key set (for search reasons), it's just empty on ones that didn't have one
 		if len(card['text']) > 0:
 			cardInfoList.append(card['text'])
@@ -358,7 +416,7 @@ class Command(CommandTemplate):
 				setlistString += u"{} ({}); ".format(setname, rarity)
 			setlistString = setlistString[:-2]  #Remove the last '; '
 			if setcount > maxSetsToDisplay:
-				setlistString += u" and {:,} more".format(setcount - maxSetsToDisplay)
+				setlistString += u"; {:,} more".format(setcount - maxSetsToDisplay)
 			cardInfoList.append(setlistString)
 		#No extra set info, but still add a warning if it's in a non-legal set
 		else:
@@ -413,27 +471,82 @@ class Command(CommandTemplate):
 				replytext += cardInfoPart[:splitIndex] + u'\n'
 				messageLength = 0
 
-		#Remove the separator at the end, and make sure it's a string and not unicode
-		replytext = replytext.rstrip(Constants.GREY_SEPARATOR).rstrip().encode('utf-8')
+		#Remove the separator at the end, if there is one
+		if replytext.endswith(Constants.GREY_SEPARATOR):
+			replytext = replytext[:-separatorLength].rstrip()
+		#Make sure we return a string and not unicode
+		replytext = replytext.encode('utf-8')
 		return replytext
 
+	def getLinksFromSearchString(self, searchDict, matchingCards, pickRandomCard, numberOfCardsToListOnLargeResult):
+			# Reply with links to further information about the found card
+			matchingCardname = None
+			if pickRandomCard:
+				matchingCardname = random.choice(matchingCards.keys())
+			elif len(matchingCards) == 1:
+				matchingCardname = matchingCards.keys()[0]
+			#Check if the searched name is a literal match with one of found cards. If so, pick that one
+			elif 'name' in searchDict:
+				if searchDict['name'] in matchingCards:
+					matchingCardname = searchDict['name']
+				else:
+					#Compare each name
+					cardNameToMatch = searchDict['name'].lower()
+					for cardname, carddata in matchingCards.iteritems():
+						if cardname.lower() == cardNameToMatch:
+							matchingCardname = cardname
+							break
+			if not matchingCardname:
+				# No results or too many, reuse the normal way of listing cards
+				return self.formatSearchResult(matchingCards, False, False, numberOfCardsToListOnLargeResult, None, True)
+			#Retrieve card data
+			lineNumber, listOfSetNamesToMatch = matchingCards[matchingCardname]
+			matchingCardname, carddata = json.loads(FileUtil.getLineFromFile(os.path.join("data", "MTGcards.json"), lineNumber)).popitem()
+			#We need to pick a set to link to. Either pick one from the matches list, if it's there, otherwise pick a random one
+			setNameToMatch = random.choice(listOfSetNamesToMatch) if listOfSetNamesToMatch is not None else random.choice(carddata[1].keys())
+			setSpecificCardData = carddata[1][setNameToMatch]
+			#Retrieve set info, since we need the setcode
+			with open(os.path.join(GlobalStore.scriptfolder, "data", "MTGsets.json"), 'r') as setfile:
+				setcode = json.load(setfile)[setNameToMatch.lower()]['magicCardsInfoCode']
+			#Not all cards have a multiverse id (mostly special editions of cards) or a card number (mostly old cards)
+			# Check if the required fields exist
+			linkString = u""
+			if 'multiverseid' in setSpecificCardData:
+				linkString += u"http://gatherer.wizards.com/Pages/Card/Details.aspx?multiverseid=" + setSpecificCardData['multiverseid']
+			if 'multiverseid' in setSpecificCardData and 'number' in setSpecificCardData:
+				linkString += Constants.GREY_SEPARATOR
+			if 'number' in setSpecificCardData:
+				linkString += u"https://magiccards.info/{}/en/{}.html".format(setcode, setSpecificCardData['number'])
+			displayCardname = IrcFormattingUtil.makeTextBold(carddata[0]['name'])
+			if not linkString:
+				return u"I'm sorry, I don't have enough data on {} to construct links. Must be a pretty rare card!".format(displayCardname)
+			return u"{}: {}".format(displayCardname, linkString)
+
 	@staticmethod
-	def getDefinition(message, addExtendedInfo=False):
+	def getDefinition(searchterm, maxMessageLength=None):
+		"""
+		Searches for the definition of the provided MtG-related term. Supports regular expressions as the search term
+		:param searchterm The term to find the definition of. Can be a partial match or a regular expression
+		:param maxMessageLength The maximum length of the returned definition. If set to None or to zero or smaller, the full definition will be returned
+		:return The matching term followed by the definition of that term
+		"""
 		definitionsFilename = os.path.join(GlobalStore.scriptfolder, 'data', 'MTGdefinitions.json')
 
-		maxMessageLength = 300
+		#Make sure maxMessageLength is a valid value
+		if maxMessageLength and maxMessageLength <= 0:
+			maxMessageLength = None
+
 		possibleDefinitions = {}  #Keys are the matching terms found, values are the line they're found at for easy lookup
 
-		searchterm = " ".join(message.messageParts[1:]).lower()
 		if searchterm == 'random':
-			randomLineNumber = random.randrange(0, SharedFunctions.getLineCount(definitionsFilename))
-			term = json.loads(SharedFunctions.getLineFromFile(definitionsFilename, randomLineNumber)).keys()[0]
+			randomLineNumber = random.randrange(0, FileUtil.getLineCount(definitionsFilename))
+			term = json.loads(FileUtil.getLineFromFile(definitionsFilename, randomLineNumber)).keys()[0]
 			possibleDefinitions = {term: randomLineNumber}
 		else:
 			try:
 				searchRegex = re.compile(searchterm)
 			except re.error:
-				return "That is not valid regex. Please check for typos, and try again"
+				return u"That is not valid regex. Please check for typos, and try again"
 
 			with open(definitionsFilename, 'r') as definitionsFile:
 				for linecount, line in enumerate(definitionsFile):
@@ -450,47 +563,29 @@ class Command(CommandTemplate):
 
 		possibleDefinitionsCount = len(possibleDefinitions)
 		if possibleDefinitionsCount == 0:
-			return "Sorry, I don't have any info on that term. If you think it's important, poke my owner(s)!"
+			replytext = u"Sorry, I don't have any info on that term. If you think it's important, poke my owner(s), maybe they'll add it!"
 		elif possibleDefinitionsCount == 1:
+			#Found one definition, return that
 			term, linenumber = possibleDefinitions.popitem()
-			definition = json.loads(SharedFunctions.getLineFromFile(definitionsFilename, linenumber)).values()[0]
-			replytext = "{}: {}".format(SharedFunctions.makeTextBold(term), definition)
+			definition = json.loads(FileUtil.getLineFromFile(definitionsFilename, linenumber)).values()[0]
+			replytext = u"{}: {}".format(IrcFormattingUtil.makeTextBold(term), definition)
 			#Limit the message length
-			if len(replytext) > maxMessageLength:
+			if maxMessageLength and len(replytext) > maxMessageLength:
 				splitIndex = replytext[:maxMessageLength].rfind(' ')
-				textRemainder = replytext[splitIndex+1:]
-				replytext = replytext[:splitIndex]
-				#If we do need to add the full definition, split it up properly
-				if addExtendedInfo:
-					#If it's a private message, we don't have to worry about spamming, so just dump the full thing
-					if message.isPrivateMessage:
-						gevent.spawn_later(0.2, message.bot.sendMessage, message.userNickname, textRemainder)
-					# If it's in a public channel, send the message via notices
-					else:
-						#Since we'll be sending the rest of the definition in notices, add an indication that it's not the whole message
-						replytext += ' [...]'
-						#Don't send messages too quickly
-						secondsBetweenMessages = message.bot.secondsBetweenLineSends
-						if not secondsBetweenMessages:
-							secondsBetweenMessages = 0.2
-						counter = 1
-						while len(textRemainder) > 0:
-							gevent.spawn_later(secondsBetweenMessages * counter, message.bot.sendMessage, message.userNickname,
-											   u"({}) {}".format(counter + 1, textRemainder[:maxMessageLength]), 'notice')
-							textRemainder = textRemainder[maxMessageLength:]
-							counter += 1
+				replytext = replytext[:splitIndex] + u' [...]'
 		#Multiple matching definitions found
 		else:
 			if searchterm in possibleDefinitions:
-				definition = json.loads(SharedFunctions.getLineFromFile(definitionsFilename, possibleDefinitions[searchterm])).values()[0]
-				replytext = "{}: {}".format(SharedFunctions.makeTextBold(searchterm), definition)
-				if len(replytext) > maxMessageLength - 18:  #-18 to account for the added text later
-					replytext = replytext[:maxMessageLength-24] + ' [...]'
-				replytext += " ({:,} more matches)".format(possibleDefinitionsCount-1)
+				#Multiple matches, but one of them is the literal search term. Return that, and how many other matches we found
+				definition = json.loads(FileUtil.getLineFromFile(definitionsFilename, possibleDefinitions[searchterm])).values()[0]
+				replytext = u"{}: {}".format(IrcFormattingUtil.makeTextBold(searchterm), definition)
+				if maxMessageLength and len(replytext) > maxMessageLength - 18:  #-18 to account for the ' XX more matches' text later
+					replytext = replytext[:maxMessageLength-24] + ' [...]'  #18 + len(' [...]')
+				replytext += u" ({:,} more matches)".format(possibleDefinitionsCount-1)
 			else:
-				replytext = "Your search returned {:,} results, please be more specific".format(possibleDefinitionsCount)
+				replytext = u"Your search returned {:,} results, please be more specific".format(possibleDefinitionsCount)
 				if possibleDefinitionsCount < 10:
-					replytext += ": {}".format(u"; ".join(sorted(possibleDefinitions.keys())))
+					replytext += u": {}".format(u"; ".join(sorted(possibleDefinitions.keys())))
 		return replytext
 
 
@@ -610,9 +705,18 @@ class Command(CommandTemplate):
 			possibleCards['basic land'] = ['Forest', 'Island', 'Mountain', 'Plains', 'Swamp']
 
 		#Check if we found enough cards
+		raritySubstitutions = []
 		for rarity, count in boosterRarities.iteritems():
 			if rarity == '_choice':
 				continue
+
+			#Use normal rarity cards if there aren't enough 'double faced [rarity]' cards (Solves problem with e.g. 'Shadows Over Innistrad' and 'Eldritch Moon')
+			if rarity.startswith('double faced') or rarity.startswith('double-faced'):
+				fallbackRarity = rarity.split('faced ', 1)[-1]
+				if fallbackRarity in possibleCards and (rarity not in possibleCards or len(possibleCards[rarity]) < count):
+					possibleCards[rarity].extend(possibleCards[fallbackRarity])
+					raritySubstitutions.append((rarity, fallbackRarity))
+
 			if rarity not in possibleCards:
 				return (False, u"No cards with rarity '{}' found in set '{}', and I can't make a booster pack without it!".format(rarity, properSetname))
 			elif len(possibleCards[rarity]) < count:
@@ -623,13 +727,18 @@ class Command(CommandTemplate):
 		replytext = "{}{}".format(properSetname.encode('utf-8'), Constants.GREY_SEPARATOR)
 		for rarity, count in boosterRarities.iteritems():
 			cardlist = "; ".join(random.sample(possibleCards[rarity], count)).encode('utf-8')
-			replytext += "{}: {}. ".format(SharedFunctions.makeTextBold(rarity.encode('utf-8').capitalize()), cardlist)
+			replytext += "{}: {}. ".format(IrcFormattingUtil.makeTextBold(rarity.encode('utf-8').capitalize()), cardlist)
+		if raritySubstitutions:
+			replytext += "(Rarity subsitutions: "
+			for substitutionPair in raritySubstitutions:
+				replytext += "'{}' as '{}',".format(substitutionPair[1], substitutionPair[0])
+			replytext = replytext.rstrip(',') + ")"
 		return (True, replytext)
 
 	def downloadCardDataset(self):
 		url = "http://mtgjson.com/json/AllSetFilesWindows.zip"  # Use the Windows version to keep it multi-platform (Windows can't handle files named 'CON')
 		cardzipFilename = os.path.join(GlobalStore.scriptfolder, 'data', url.split('/')[-1])
-		success, extraInfo = SharedFunctions.downloadFile(url, cardzipFilename)
+		success, extraInfo = WebUtil.downloadFile(url, cardzipFilename)
 		if not success:
 			self.logError("[MTG] An error occurred while trying to download the card file: " + extraInfo.message)
 			return (False, "Something went wrong while trying to download the card file.")
@@ -699,12 +808,14 @@ class Command(CommandTemplate):
 		definitions = []
 		#Lists of what to do with certain set keys
 		setKeysToRemove = ('border', 'magicRaritiesCodes', 'mkm_id', 'mkm_name', 'oldCode', 'onlineOnly', 'translations')
-		raritiesToRemove = ('checklist', 'double faced', 'draft-matters', 'foil', 'marketing', 'power nine', 'timeshifted purple')
+		raritiesToRemove = ('checklist', 'double faced', 'draft-matters', 'foil', 'marketing', 'power nine', 'timeshifted purple', 'token')
 		raritiesToRename = {'land': 'basic land', 'urza land': 'land — urza’s'}  #Non-standard rarities are interpreted as regexes for type
 		rarityPrefixesToRemove = {'foil ': 5, 'timeshifted ': 12}  #The numbers are the string length, saves a lot of 'len()' calls
 		#Lists of what to do with certain card keys
 		keysToRemove = ('border', 'colorIdentity', 'id', 'imageName', 'mciNumber', 'releaseDate', 'reserved', 'starter', 'subtypes', 'supertypes', 'timeshifted', 'types', 'variations')
 		keysToFormatNicer = ('flavor', 'manacost', 'text')
+		#Some number fields can be 'null' if they're 'X' on the card, so their value depends on some card text or mana spent. Change that to 'X' in our dataset
+		nullFieldsToX = ('loyalty',)
 		layoutTypesToRemove = ('normal', 'phenomenon', 'plane', 'scheme', 'vanguard')
 		listKeysToMakeString = ('colors', 'names')
 		setSpecificCardKeys = ('artist', 'flavor', 'multiverseid', 'number', 'rarity', 'watermark')
@@ -727,6 +838,7 @@ class Command(CommandTemplate):
 		gamewideCardStoreFile = open(gamewideCardStoreFilename, 'w')
 
 		#Write each keyword we find to the definitions file so we don't have to keep it in memory
+		definitionsFile = None
 		if shouldUpdateDefinitions:
 			definitionsFile = open(definitionsFilename, 'w')
 
@@ -828,6 +940,10 @@ class Command(CommandTemplate):
 
 					#If the card isn't in the store yet, parse its data
 					if cardname not in newcardstore:
+						# If there is no number set, substitute the 'mciNumber', since it's the closest we can get
+						if 'number' not in card and 'mciNumber' in card:
+							card['number'] = card['mciNumber']
+
 						#Remove some useless data to save some space, memory and time
 						for keyToRemove in keysToRemove:
 							if keyToRemove in card:
@@ -836,6 +952,9 @@ class Command(CommandTemplate):
 						#No need to store there's nothing special about the card's layout or if the special-ness is already evident from the text
 						if card['layout'] in layoutTypesToRemove:
 							del card['layout']
+						#For display purposes, capitalise the first letter of the layout
+						else:
+							card['layout'] = card['layout'].capitalize()
 
 						#The 'Colors' field benefits from some ordering, for readability.
 						if 'colors' in card:
@@ -850,6 +969,10 @@ class Command(CommandTemplate):
 						for attrib in listKeysToMakeString:
 							if attrib in card:
 								card[attrib] = u"; ".join(card[attrib])
+
+						for field in nullFieldsToX:
+							if field in card and card[field] is None:
+								card[field] = 'X'
 
 						#Make 'manaCost' lowercase, since we make the searchstring lowercase too, and we don't want to miss this
 						if 'manaCost' in card:
@@ -896,10 +1019,12 @@ class Command(CommandTemplate):
 		if os.path.exists(setStoreFilename):
 			os.remove(setStoreFilename)
 		#Save the new databases to disk
+		numberOfCards = 0
 		with open(cardStoreFilename, 'w') as cardfile:
 			gamewideCardStoreFile = open(gamewideCardStoreFilename, 'r')
 			#Go through each card's game-wide data and append the set-specific data to it
 			for line in gamewideCardStoreFile:
+				numberOfCards += 1
 				cardname, gamewideCardData = json.loads(line).popitem()
 				#Write each card's as a separate JSON file so we can go through it line by line instead of having to load it all at once
 				cardfile.write(json.dumps({cardname: [gamewideCardData, newcardstore.pop(cardname)]}))
@@ -916,7 +1041,7 @@ class Command(CommandTemplate):
 
 		#Store the new version data
 		with open(os.path.join(GlobalStore.scriptfolder, 'data', 'MTGversion.json'), 'w') as versionFile:
-			versionFile.write(json.dumps({'formatVersion': self.dataFormatVersion, 'dataVersion': self.getLatestVersionNumber()[1], 'lastUpdateTime': time.time()}))
+			versionFile.write(json.dumps({'formatVersion': self.dataFormatVersion, 'dataVersion': self.getLatestVersionNumber()[1], 'lastUpdateTime': time.time(), 'cardCount': numberOfCards}))
 
 		replytext = "MtG card database successfully updated (Changelog: http://mtgjson.com/changelog.html)"
 		if shouldUpdateDefinitions:
@@ -969,6 +1094,9 @@ class Command(CommandTemplate):
 			# Check to see if the term ends with mana costs. If it does, strip that off
 			if ' ' in term:
 				end = term.split(' ')[-1]
+				#Remove any periods from the end
+				if end.endswith('.'):
+					end = end[:-1]
 				if end.isdigit() or end == 'x':
 					term = term.rsplit(" ", 1)[0]
 			#For some keywords, the card description just doesn't work that well. Ignore those, and get those from Wikipedia later on

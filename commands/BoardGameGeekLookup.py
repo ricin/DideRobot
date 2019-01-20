@@ -6,7 +6,8 @@ from bs4 import BeautifulSoup
 
 from CommandTemplate import CommandTemplate
 from IrcMessage import IrcMessage
-import SharedFunctions
+from util import IrcFormattingUtil
+import Constants
 
 
 class Command(CommandTemplate):
@@ -60,11 +61,11 @@ class Command(CommandTemplate):
 			print request.content
 			return
 
-		replytext = u"{} ({} players, {} minutes, {}): ".format(SharedFunctions.makeTextBold(item.find('name').attrib['value']), self.getValueRangeDescription(item, 'minplayers', 'maxplayers'),
-															   self.getValueRangeDescription(item, 'minplaytime', 'maxplaytime'), item.find('yearpublished').attrib['value'])
-		url = u" (http://boardgamegeek.com/boardgame/{})".format(gameId)
+		replytext = u"{} ({} players, {} min, {}): ".format(IrcFormattingUtil.makeTextBold(item.find('name').attrib['value']), self.getValueRangeDescription(item, 'minplayers', 'maxplayers'),
+															self.getValueRangeDescription(item, 'minplaytime', 'maxplaytime'), item.find('yearpublished').attrib['value'])
+		url = u"{}http://boardgamegeek.com/boardgame/{})".format(Constants.GREY_SEPARATOR, gameId)
 		#Fit in as much of the description as we can
-		lengthLeft = 295 - len(replytext) - len(url)
+		lengthLeft = Constants.MAX_MESSAGE_LENGTH - len(replytext) - len(url)
 		description = HTMLParser.HTMLParser().unescape(item.find('description').text)
 		#Some descriptions start with a disclaimer that it's from the publisher, remove that to save space
 		if description.startswith(u"Game description from the publisher") or description.startswith(u"From the manufacturer's website"):

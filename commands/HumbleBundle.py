@@ -4,8 +4,11 @@ import requests
 from bs4 import BeautifulSoup
 
 from CommandTemplate import CommandTemplate
-import SharedFunctions
+from util import DateTimeUtil
+from util import IrcFormattingUtil
+from util import StringUtil
 from IrcMessage import IrcMessage
+import Constants
 
 
 class Command(CommandTemplate):
@@ -34,7 +37,6 @@ class Command(CommandTemplate):
 
 		#Only add all the games if the full trigger is used
 		addGameList = message.trigger == 'humblebundle'
-		maxMessageLength = 300
 
 		try:
 			pageDownload = requests.get(url, timeout=10.0)
@@ -160,7 +162,7 @@ class Command(CommandTemplate):
 			#The time variable is in a different script than the other data, search for it separately
 			timeLeftMatch = re.search('var timing = \{"start": \d+, "end": (\d+)\};', script)
 			if timeLeftMatch:
-				timeLeft = SharedFunctions.durationSecondsToText(int(timeLeftMatch.group(1)) - time.time(), 'm')
+				timeLeft = DateTimeUtil.durationSecondsToText(int(timeLeftMatch.group(1)) - time.time(), 'm')
 
 			#If we found all the data we need, we can stop
 			if avgPrice > -1.0 and timeLeft != u"":
@@ -178,9 +180,9 @@ class Command(CommandTemplate):
 				#Add a list of all the games found
 				for priceType in ('PWYW', 'BTA', 'Fixed'):
 					if len(gamePriceCategories[priceType]) > 0:
-						replytext += u" {}: {}".format(SharedFunctions.makeTextBold(priceType), SharedFunctions.joinWithSeparator(gamePriceCategories[priceType]))
-				if not message.isPrivateMessage and len(replytext) > maxMessageLength:
-					replytext = replytext[:maxMessageLength-5] + u"[...]"
+						replytext += u" {}: {}".format(IrcFormattingUtil.makeTextBold(priceType), StringUtil.joinWithSeparator(gamePriceCategories[priceType]))
+				if not message.isPrivateMessage and len(replytext) > Constants.MAX_MESSAGE_LENGTH:
+					replytext = replytext[:Constants.MAX_MESSAGE_LENGTH - 5] + u"[...]"
 				replytext += u" (itemlist may be wrong)"
 			#Add the url too, so people can go see the bundle easily
 			replytext += u" ({})".format(url)
